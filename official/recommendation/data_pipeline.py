@@ -77,6 +77,7 @@ class DatasetManager(object):
                shard_root=None):
     self._is_training = is_training
     self._stream_files = stream_files
+    self._writers = []
     self._batches_per_epoch = batches_per_epoch
     self._epochs_completed = 0
     self._epochs_requested = 0
@@ -144,10 +145,8 @@ class DatasetManager(object):
     # type: (int, dict) -> None
     if self._stream_files:
       example_bytes = self._serialize(data)
-      shard_name = rconst.SHARD_TEMPLATE.format(index % rconst.NUM_FILE_SHARDS)
-      fpath = os.path.join(self.current_data_root, shard_name)
-      with tf.python_io.TFRecordWriter(fpath) as writer:
-        writer.write(example_bytes)
+      self._writers[index % rconst.NUM_FILE_SHARDS].write(example_bytes)
+
     else:
       if self._is_training:
         mask_start_index = data.pop(rconst.MASK_START_INDEX)
@@ -161,9 +160,14 @@ class DatasetManager(object):
   def start_construction(self):
     if self._stream_files:
       tf.gfile.MakeDirs(self.current_data_root)
+      template = os.path.join(self.current_data_root, rconst.SHARD_TEMPLATE)
+      self._writers = [tf.io.TFRecordWriter(template.format(i))
+                       for i in range(rconst.NUM_FILE_SHARDS)]
 
   def end_construction(self):
     if self._stream_files:
+      [writer.close() for writer in self._writers]
+      self._writers = []
       self._result_queue.put(self.current_data_root)
     elif not self._is_training:
       self._result_queue.put(True)  # data is ready.
@@ -207,11 +211,11 @@ class DatasetManager(object):
       types[rconst.VALID_POINT_MASK] = np.bool
       shapes[rconst.VALID_POINT_MASK] = tf.TensorShape([batch_size])
 
-      types = (types, rconst.LABEL_DTYPE)
+      types = (types, np.bool)
       shapes = (shapes, tf.TensorShape([batch_size]))
 
     else:
-      types[rconst.DUPLICATE_MASK] = rconst.DUPE_MASK_DTYPE
+      types[rconst.DUPLICATE_MASK] = np.bool
       shapes[rconst.DUPLICATE_MASK] = tf.TensorShape([batch_size])
 
     return tf.data.Dataset.from_generator(
@@ -378,7 +382,7 @@ class BaseDataConstructor(threading.Thread):
     items = self._train_pos_items[batch_ind_mod]
     items[negative_indices] = negative_items
 
-    labels = np.logical_not(negative_indices).astype(rconst.LABEL_DTYPE)
+    labels = np.logical_not(negative_indices).astype(np.bool)
 
     # Pad last partial batch
     pad_length = self.train_batch_size - batch_indices.shape[0]
@@ -455,8 +459,7 @@ class BaseDataConstructor(threading.Thread):
       users = np.concatenate([users, padding.astype(users.dtype)], axis=0)
       items = np.concatenate([items, padding.astype(items.dtype)], axis=0)
 
-    duplicate_mask = stat_utils.mask_duplicates(items, axis=1).astype(
-        rconst.DUPE_MASK_DTYPE)
+    duplicate_mask = stat_utils.mask_duplicates(items, axis=1).astype(np.bool)
 
     items[:, (0, -1)] = items[:, (-1, 0)]
     duplicate_mask[:, (0, -1)] = duplicate_mask[:, (-1, 0)]
