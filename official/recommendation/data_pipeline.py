@@ -516,12 +516,14 @@ class DummyConstructor(threading.Thread):
                                 maxval=num_items)
 
       if is_training:
-        labels = tf.random_uniform([batch_size], dtype=tf.int32, minval=0,
-                                   maxval=2)
+        valid_point_mask = tf.cast(tf.random_uniform(
+            [batch_size], dtype=tf.int32, minval=0, maxval=2), tf.bool)
+        labels = tf.cast(tf.random_uniform(
+            [batch_size], dtype=tf.int32, minval=0, maxval=2), tf.bool)
         data = {
                  movielens.USER_COLUMN: users,
                  movielens.ITEM_COLUMN: items,
-                 rconst.MASK_START_INDEX: tf.convert_to_tensor(batch_size),
+                 rconst.VALID_POINT_MASK: valid_point_mask,
                }, labels
       else:
         dupe_mask = tf.cast(tf.random_uniform([batch_size], dtype=tf.int32,
@@ -537,7 +539,7 @@ class DummyConstructor(threading.Thread):
       dataset = dataset.prefetch(32)
       return dataset
 
-    return input_fn, rconst.SYNTHETIC_BATCHES_PER_EPOCH
+    return input_fn
 
 
 class MaterializedDataConstructor(BaseDataConstructor):
