@@ -24,6 +24,8 @@ from __future__ import print_function
 
 import contextlib
 import heapq
+import json
+import logging
 import math
 import multiprocessing
 import os
@@ -54,12 +56,13 @@ from official.utils.misc import model_helpers
 FLAGS = flags.FLAGS
 
 
-def construct_estimator(model_dir, iterations, params):
+def construct_estimator(model_dir, num_train_steps, num_eval_steps, params):
   """Construct either an Estimator or TPUEstimator for NCF.
 
   Args:
     model_dir: The model directory for the estimator
-    iterations:  Estimator iterations
+    num_train_steps: The number of training steps in an epoch
+    num_eval_steps: The number of evaluation steps in an epoch
     params: The params dict for the estimator
 
   Returns:
@@ -67,57 +70,49 @@ def construct_estimator(model_dir, iterations, params):
   """
 
   if params["use_tpu"]:
+    # There are lots of extraneous warnings around the OAuth file cache.
+    logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+
     tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
         tpu=params["tpu"],
         zone=params["tpu_zone"],
         project=params["tpu_gcp_project"],
         coordinator_name="coordinator"
     )
+
     tf.logging.info("Issuing reset command to TPU to ensure a clean state.")
     tf.Session.reset(tpu_cluster_resolver.get_master())
 
-    tpu_config = tf.contrib.tpu.TPUConfig(
-        iterations_per_loop=iterations,
-        num_shards=8)
+    # Estimator looks at the master it connects to for MonitoredTrainingSession
+    # by reading the `TF_CONFIG` environment variable, and the coordinator
+    # is used by StreamingFilesDataset.
+    tf_config_env = {
+      'session_master': tpu_cluster_resolver.get_master(),
+      'eval_session_master': tpu_cluster_resolver.get_master(),
+      'coordinator': tpu_cluster_resolver.cluster_spec().as_dict()["coordinator"]
+    }
+    os.environ['TF_CONFIG'] = json.dumps(tf_config_env)
 
-    run_config = tf.contrib.tpu.RunConfig(
-        cluster=tpu_cluster_resolver,
-        model_dir=model_dir,
-        save_checkpoints_secs=600,
-        session_config=tf.ConfigProto(
-            allow_soft_placement=True, log_device_placement=False),
-        tpu_config=tpu_config)
+    run_config = tf.estimator.RunConfig(
+        train_distribute=tf.contrib.distribute.TPUStrategy(
+            tpu_cluster_resolver, num_train_steps, params["batches_per_step"]),
+        eval_distribute=tf.contrib.distribute.TPUStrategy(
+            tpu_cluster_resolver, num_eval_steps, params["batches_per_step"]),
+    )
 
-    tpu_params = {k: v for k, v in params.items() if k != "batch_size"}
+  else:
+    distribution = distribution_utils.get_distribution_strategy(
+        num_gpus=params["num_gpus"])
+    run_config = tf.estimator.RunConfig(train_distribute=distribution,
+                                        eval_distribute=distribution)
 
-    train_estimator = tf.contrib.tpu.TPUEstimator(
-        model_fn=neumf_model.neumf_model_fn,
-        use_tpu=True,
-        train_batch_size=params["batch_size"] * params["batches_per_step"],
-        eval_batch_size=params["eval_batch_size"] * params["batches_per_step"],
-        params=tpu_params,
-        config=run_config)
-
-    eval_estimator = tf.contrib.tpu.TPUEstimator(
-        model_fn=neumf_model.neumf_model_fn,
-        use_tpu=True,
-        train_batch_size=params["batch_size"] * params["batches_per_step"],
-        eval_batch_size=params["eval_batch_size"] * params["batches_per_step"],
-        params=tpu_params,
-        config=run_config)
-
-    return train_estimator, eval_estimator
-
-  distribution = distribution_utils.get_distribution_strategy(num_gpus=params["num_gpus"])
-  run_config = tf.estimator.RunConfig(train_distribute=distribution,
-                                      eval_distribute=distribution)
   model_fn = neumf_model.neumf_model_fn
   if params["use_xla_for_gpu"]:
     tf.logging.info("Using XLA for GPU for training and evaluation.")
     model_fn = xla.estimator_model_fn(model_fn)
   estimator = tf.estimator.Estimator(model_fn=model_fn, model_dir=model_dir,
                                      config=run_config, params=params)
-  return estimator, estimator
+  return estimator
 
 
 def log_and_get_hooks(eval_batch_size):
@@ -147,17 +142,15 @@ def log_and_get_hooks(eval_batch_size):
 
 def parse_flags(flags_obj):
   num_gpus = flags_core.get_num_gpus(flags_obj)
-
-  # TODO(robieta): TPU shards
-  num_devices = num_gpus or 1
+  num_devices = FLAGS.num_tpu_shards if FLAGS.tpu else num_gpus or 1
 
   batch_size = distribution_utils.per_device_batch_size(
-      (int(flags_obj.batch_size) + num_devices - 1) // num_devices * num_devices, num_gpus)
+      (int(flags_obj.batch_size) + num_devices - 1) // num_devices * num_devices, num_devices)
 
   eval_divisor = (rconst.NUM_EVAL_NEGATIVES + 1) * num_devices
   eval_batch_size = int(flags_obj.eval_batch_size or flags_obj.batch_size or 1)
   eval_batch_size = distribution_utils.per_device_batch_size(
-      (eval_batch_size + eval_divisor - 1) // eval_divisor * eval_divisor, num_gpus)
+      (eval_batch_size + eval_divisor - 1) // eval_divisor * eval_divisor, num_devices)
 
   return {
     "train_epochs": flags_obj.train_epochs,
@@ -228,8 +221,9 @@ def run_ncf(_):
   params["num_users"], params["num_items"] = num_users, num_items
   model_helpers.apply_clean(flags.FLAGS)
 
-  train_estimator, eval_estimator = construct_estimator(
-      model_dir=FLAGS.model_dir, iterations=num_train_steps, params=params)
+  estimator = construct_estimator(
+      model_dir=FLAGS.model_dir, num_train_steps=num_train_steps,
+      num_eval_steps=num_eval_steps, params=params)
 
   benchmark_logger, train_hooks = log_and_get_hooks(params["eval_batch_size"])
 
@@ -244,7 +238,7 @@ def run_ncf(_):
                             value=cycle_index)
 
     train_input_fn = producer.make_input_fn(is_training=True)
-    train_estimator.train(input_fn=train_input_fn, hooks=train_hooks,
+    estimator.train(input_fn=train_input_fn, hooks=train_hooks,
                           steps=num_train_steps)
 
     tf.logging.info("Beginning evaluation.")
@@ -252,7 +246,7 @@ def run_ncf(_):
 
     mlperf_helper.ncf_print(key=mlperf_helper.TAGS.EVAL_START,
                             value=cycle_index)
-    eval_results = eval_estimator.evaluate(eval_input_fn,
+    eval_results = estimator.evaluate(eval_input_fn,
                                            steps=num_eval_steps)
     tf.logging.info("Evaluation complete.")
 
@@ -437,18 +431,6 @@ def define_ncf_flags():
   def eval_size_check(eval_batch_size):
     return (eval_batch_size is None or
             int(eval_batch_size) > rconst.NUM_EVAL_NEGATIVES)
-
-  flags.DEFINE_bool(
-      name="use_subprocess", default=True, help=flags_core.help_wrap(
-          "By default, ncf_main.py starts async data generation process as a "
-          "subprocess. If set to False, ncf_main.py will assume the async data "
-          "generation process has already been started by the user."))
-
-  flags.DEFINE_integer(name="cache_id", default=None, help=flags_core.help_wrap(
-      "Use a specified cache_id rather than using a timestamp. This is only "
-      "needed to synchronize across multiple workers. Generally this flag will "
-      "not need to be set."
-  ))
 
   flags.DEFINE_bool(
       name="use_xla_for_gpu", default=False, help=flags_core.help_wrap(
