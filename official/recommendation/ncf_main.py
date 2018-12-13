@@ -70,8 +70,10 @@ def construct_estimator(model_dir, num_train_steps, num_eval_steps, params):
   """
 
   if params["use_tpu"]:
-    # There are lots of extraneous warnings around the OAuth file cache.
-    logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+    # Some of the networking libraries are quite chatty.
+    for name in ["googleapiclient.discovery", "googleapiclient.discovery_cache",
+                 "oauth2client.transport"]:
+      logging.getLogger(name).setLevel(logging.ERROR)
 
     tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
         tpu=params["tpu"],

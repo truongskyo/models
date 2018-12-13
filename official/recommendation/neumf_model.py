@@ -92,7 +92,7 @@ def neumf_model_fn(features, labels, mode, params):
     return compute_eval_loss_and_metrics(
         logits, softmax_logits, duplicate_mask, params["num_neg"],
         params["match_mlperf"],
-        use_tpu_spec=params["use_tpu"] or params["use_xla_for_gpu"])
+        use_tpu_spec=params["use_xla_for_gpu"])
 
   elif mode == tf.estimator.ModeKeys.TRAIN:
     labels = tf.cast(labels, tf.int32)

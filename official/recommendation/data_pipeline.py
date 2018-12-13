@@ -199,8 +199,9 @@ class DatasetManager(object):
           epoch_data_dir, rconst.SHARD_TEMPLATE.format("*"))
       dataset = StreamingFilesDataset(
           files=file_pattern, worker_job="worker",
-          num_parallel_reads=rconst.NUM_FILE_SHARDS)
-      return dataset.map(functools.partial(self._deserialize, batch_size=batch_size), num_parallel_calls=16)
+          num_parallel_reads=rconst.NUM_FILE_SHARDS, num_epochs=1)
+      map_fn = functools.partial(self._deserialize, batch_size=batch_size)
+      return dataset.map(map_fn, num_parallel_calls=16)
 
     types = {movielens.USER_COLUMN: rconst.USER_DTYPE,
              movielens.ITEM_COLUMN: rconst.ITEM_DTYPE}
@@ -535,7 +536,7 @@ class DummyConstructor(threading.Thread):
         }
 
       dataset = tf.data.Dataset.from_tensors(data).repeat(
-          rconst.SYNTHETIC_BATCHES_PER_EPOCH)
+          rconst.SYNTHETIC_BATCHES_PER_EPOCH * params["batches_per_step"])
       dataset = dataset.prefetch(32)
       return dataset
 
