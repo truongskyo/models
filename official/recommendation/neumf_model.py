@@ -76,7 +76,7 @@ def neumf_model_fn(features, labels, mode, params):
     tf.set_random_seed(stat_utils.random_int32())
 
   users = features[movielens.USER_COLUMN]
-  items = tf.cast(features[movielens.ITEM_COLUMN], tf.int32)
+  items = features[movielens.ITEM_COLUMN]
 
   if params["use_tpu"]:
     logits = construct_model_tf(users, items, params)
@@ -468,10 +468,6 @@ def compute_top_k_and_ndcg(logits,              # type: tf.Tensor
                                       (-1, rconst.NUM_EVAL_NEGATIVES + 1))
 
   if match_mlperf:
-    # TODO(robieta): if dupe mask is not used, need to account for the case when
-    #                eval item is in the negative examples. (since it is not at
-    #                the end.)
-
     # Set duplicate logits to the min value for that dtype. The MLPerf
     # reference dedupes during evaluation.
     logits_by_user *= (1 - duplicate_mask_by_user)

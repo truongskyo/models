@@ -56,13 +56,11 @@ from official.utils.misc import model_helpers
 FLAGS = flags.FLAGS
 
 
-def construct_estimator(model_dir, num_train_steps, num_eval_steps, params):
+def construct_estimator(model_dir, params):
   """Construct either an Estimator or TPUEstimator for NCF.
 
   Args:
     model_dir: The model directory for the estimator
-    num_train_steps: The number of training steps in an epoch
-    num_eval_steps: The number of evaluation steps in an epoch
     params: The params dict for the estimator
 
   Returns:
@@ -95,18 +93,15 @@ def construct_estimator(model_dir, num_train_steps, num_eval_steps, params):
     }
     os.environ['TF_CONFIG'] = json.dumps(tf_config_env)
 
-    run_config = tf.estimator.RunConfig(
-        train_distribute=tf.contrib.distribute.TPUStrategy(
-            tpu_cluster_resolver, num_train_steps, params["batches_per_step"]),
-        eval_distribute=tf.contrib.distribute.TPUStrategy(
-            tpu_cluster_resolver, num_eval_steps, params["batches_per_step"]),
-    )
+    distribution =tf.contrib.distribute.TPUStrategy(
+        tpu_cluster_resolver, 100, params["batches_per_step"])
 
   else:
     distribution = distribution_utils.get_distribution_strategy(
         num_gpus=params["num_gpus"])
-    run_config = tf.estimator.RunConfig(train_distribute=distribution,
-                                        eval_distribute=distribution)
+
+  run_config = tf.estimator.RunConfig(train_distribute=distribution,
+                                      eval_distribute=distribution)
 
   model_fn = neumf_model.neumf_model_fn
   if params["use_xla_for_gpu"]:
@@ -205,13 +200,11 @@ def run_ncf(_):
     num_train_steps = rconst.SYNTHETIC_BATCHES_PER_EPOCH
     num_eval_steps = rconst.SYNTHETIC_BATCHES_PER_EPOCH
   else:
-    ncf_dataset, producer = data_preprocessing.instantiate_pipeline(
-        dataset=FLAGS.dataset, data_dir=FLAGS.data_dir, num_data_readers=None,
+    num_users, num_items, producer = data_preprocessing.instantiate_pipeline(
+        dataset=FLAGS.dataset, data_dir=FLAGS.data_dir,
         match_mlperf=FLAGS.ml_perf, deterministic=FLAGS.seed is not None,
         params=params)
 
-    num_users = ncf_dataset.num_users
-    num_items = ncf_dataset.num_items
     num_train_steps = (producer.train_batches_per_epoch //
                        params["batches_per_step"])
     num_eval_steps = (producer.eval_batches_per_epoch //
@@ -223,9 +216,7 @@ def run_ncf(_):
   params["num_users"], params["num_items"] = num_users, num_items
   model_helpers.apply_clean(flags.FLAGS)
 
-  estimator = construct_estimator(
-      model_dir=FLAGS.model_dir, num_train_steps=num_train_steps,
-      num_eval_steps=num_eval_steps, params=params)
+  estimator = construct_estimator(model_dir=FLAGS.model_dir, params=params)
 
   benchmark_logger, train_hooks = log_and_get_hooks(params["eval_batch_size"])
 
