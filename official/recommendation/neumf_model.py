@@ -169,29 +169,27 @@ def construct_model(users, items, params):
     raise ValueError("The first layer size should be multiple of 2!")
 
   # Input variables
-  user_input = tf.keras.layers.Input(tensor=users)
-  item_input = tf.keras.layers.Input(tensor=items)
-  batch_size = user_input.get_shape()[0]
-  mf_size = model_layers[0] // 2
+  user_input = tf.keras.layers.Input(tensor=users, name="user_input")
+  item_input = tf.keras.layers.Input(tensor=items, name="item_input")
 
   # Initializer for embedding layers
   embedding_initializer = "glorot_uniform"
 
   # It turns out to be significantly more effecient to store the MF and MLP
   # embedding portions in the same table, and then slice as needed.
-  mf_slice_fn = lambda x: tf.slice(x, [0, 0], [batch_size, mf_size])
-  mlp_slice_fn = lambda x: tf.slice(x, [0, mf_size], [batch_size, mf_dim])
+  mf_slice_fn = lambda x: x[:, :mf_dim]
+  mlp_slice_fn = lambda x: x[:, mf_dim:]
   embedding_user = tf.keras.layers.Embedding(
-      num_users, mf_dim + mf_size,
+      num_users, mf_dim + model_layers[0] // 2,
       embeddings_initializer=embedding_initializer,
       embeddings_regularizer=tf.keras.regularizers.l2(mf_regularization),
       input_length=1, name="embedding_user")(user_input)
 
   embedding_item = tf.keras.layers.Embedding(
-    num_items, mf_dim + mf_size,
+    num_items, mf_dim + model_layers[0] // 2,
     embeddings_initializer=embedding_initializer,
     embeddings_regularizer=tf.keras.regularizers.l2(mf_regularization),
-    input_length=1, name="embedding_item")(user_input)
+    input_length=1, name="embedding_item")(item_input)
 
   # GMF part
   mf_user_latent = tf.keras.layers.Lambda(
