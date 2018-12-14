@@ -78,10 +78,7 @@ def neumf_model_fn(features, labels, mode, params):
   users = features[movielens.USER_COLUMN]
   items = features[movielens.ITEM_COLUMN]
 
-  if params["use_tpu"]:
-    logits = construct_model_tf(users, items, params)
-  else:
-    logits = construct_model_keras(users, items, params).output
+  logits = construct_model(users, items, params).output
 
   # Softmax with the first column of zeros is equivalent to sigmoid.
   softmax_logits = tf.concat([tf.zeros(logits.shape, dtype=logits.dtype),
@@ -141,7 +138,7 @@ def neumf_model_fn(features, labels, mode, params):
     raise NotImplementedError
 
 
-def construct_model_keras(users, items, params):
+def construct_model(users, items, params):
   # type: (tf.Tensor, tf.Tensor, dict) -> tf.keras.Model
   """Initialize NeuMF model.
 
