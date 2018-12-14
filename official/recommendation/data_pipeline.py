@@ -79,6 +79,8 @@ class DatasetManager(object):
     self._is_training = is_training
     self._stream_files = stream_files
     self._writers = []
+    self._write_locks = [threading.RLock() for _ in
+                         range(rconst.NUM_FILE_SHARDS)] if stream_files else []
     self._batches_per_epoch = batches_per_epoch
     self._epochs_completed = 0
     self._epochs_requested = 0
@@ -146,7 +148,8 @@ class DatasetManager(object):
     # type: (int, dict) -> None
     if self._stream_files:
       example_bytes = self._serialize(data)
-      self._writers[index % rconst.NUM_FILE_SHARDS].write(example_bytes)
+      with self._write_locks[index % rconst.NUM_FILE_SHARDS]:
+        self._writers[index % rconst.NUM_FILE_SHARDS].write(example_bytes)
 
     else:
       if self._is_training:
@@ -305,21 +308,21 @@ class BaseDataConstructor(threading.Thread):
         False, stream_files, self.eval_batches_per_epoch, self._shard_root)
 
     # Threading details
-    self._current_epoch_order_lock = threading.Lock()
+    self._current_epoch_order_lock = threading.RLock()
     super(BaseDataConstructor, self).__init__()
     self.daemon = True
     self._stop_loop = False
 
   def __repr__(self):
+    multiplier = ("(x{} devices)".format(self._batches_per_train_step)
+                  if self._batches_per_train_step > 1 else "")
     summary = SUMMARY_TEMPLATE.format(
         spacer="  ", num_users=self._num_users, num_items=self._num_items,
         train_pos_ct=self._train_pos_count,
         train_batch_size=self.train_batch_size,
         train_batch_ct=self.train_batches_per_epoch,
         eval_pos_ct=self._num_users, eval_batch_size=self.eval_batch_size,
-        eval_batch_ct=self.eval_batches_per_epoch,
-        multiplier="(x{} devices)".format(self._batches_per_train_step) if
-        self._batches_per_train_step > 1 else "")
+        eval_batch_ct=self.eval_batches_per_epoch, multiplier=multiplier)
     return super(BaseDataConstructor, self).__repr__() + "\n" + summary
 
   @staticmethod
@@ -328,7 +331,6 @@ class BaseDataConstructor(threading.Thread):
     return (x + batches_per_step - 1) // batches_per_step * batches_per_step
 
   def stop_loop(self):
-    self._shuffle_producer.stop_loop()
     self._stop_loop = True
 
   def _get_order_chunk(self):
@@ -346,6 +348,7 @@ class BaseDataConstructor(threading.Thread):
     raise NotImplementedError
 
   def _run(self):
+    atexit.register(self.stop_loop)
     self._start_shuffle_iterator()
     self.construct_lookup_variables()
     self._construct_training_epoch()
