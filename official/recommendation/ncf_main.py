@@ -87,13 +87,14 @@ def construct_estimator(model_dir, params):
     # by reading the `TF_CONFIG` environment variable, and the coordinator
     # is used by StreamingFilesDataset.
     tf_config_env = {
-      'session_master': tpu_cluster_resolver.get_master(),
-      'eval_session_master': tpu_cluster_resolver.get_master(),
-      'coordinator': tpu_cluster_resolver.cluster_spec().as_dict()["coordinator"]
+        "session_master": tpu_cluster_resolver.get_master(),
+        "eval_session_master": tpu_cluster_resolver.get_master(),
+        "coordinator": tpu_cluster_resolver.cluster_spec()
+                       .as_dict()["coordinator"]
     }
     os.environ['TF_CONFIG'] = json.dumps(tf_config_env)
 
-    distribution =tf.contrib.distribute.TPUStrategy(
+    distribution = tf.contrib.distribute.TPUStrategy(
         tpu_cluster_resolver, 100, params["batches_per_step"])
 
   else:
@@ -121,11 +122,11 @@ def log_and_get_hooks(eval_batch_size):
       tensors_to_log={"cross_entropy": "cross_entropy"}
   )
   run_params = {
-    "batch_size": FLAGS.batch_size,
-    "eval_batch_size": eval_batch_size,
-    "number_factors": FLAGS.num_factors,
-    "hr_threshold": FLAGS.hr_threshold,
-    "train_epochs": FLAGS.train_epochs,
+      "batch_size": FLAGS.batch_size,
+      "eval_batch_size": eval_batch_size,
+      "number_factors": FLAGS.num_factors,
+      "hr_threshold": FLAGS.hr_threshold,
+      "train_epochs": FLAGS.train_epochs,
   }
   benchmark_logger = logger.get_benchmark_logger()
   benchmark_logger.log_run_info(
@@ -142,36 +143,38 @@ def parse_flags(flags_obj):
   num_devices = FLAGS.num_tpu_shards if FLAGS.tpu else num_gpus or 1
 
   batch_size = distribution_utils.per_device_batch_size(
-      (int(flags_obj.batch_size) + num_devices - 1) // num_devices * num_devices, num_devices)
+      (int(flags_obj.batch_size) + num_devices - 1) //
+      num_devices * num_devices, num_devices)
 
   eval_divisor = (rconst.NUM_EVAL_NEGATIVES + 1) * num_devices
   eval_batch_size = int(flags_obj.eval_batch_size or flags_obj.batch_size or 1)
   eval_batch_size = distribution_utils.per_device_batch_size(
-      (eval_batch_size + eval_divisor - 1) // eval_divisor * eval_divisor, num_devices)
+      (eval_batch_size + eval_divisor - 1) //
+      eval_divisor * eval_divisor, num_devices)
 
   return {
-    "train_epochs": flags_obj.train_epochs,
-    "batches_per_step": num_devices,
-    "use_seed": flags_obj.seed is not None,
-    "hash_pipeline": flags_obj.hash_pipeline,
-    "batch_size": batch_size,
-    "eval_batch_size": eval_batch_size,
-    "learning_rate": flags_obj.learning_rate,
-    "mf_dim": flags_obj.num_factors,
-    "model_layers": [int(layer) for layer in flags_obj.layers],
-    "mf_regularization": flags_obj.mf_regularization,
-    "mlp_reg_layers": [float(reg) for reg in flags_obj.mlp_regularization],
-    "num_neg": flags_obj.num_neg,
-    "num_gpus": num_gpus,
-    "use_tpu": flags_obj.tpu is not None,
-    "tpu": flags_obj.tpu,
-    "tpu_zone": flags_obj.tpu_zone,
-    "tpu_gcp_project": flags_obj.tpu_gcp_project,
-    "beta1": flags_obj.beta1,
-    "beta2": flags_obj.beta2,
-    "epsilon": flags_obj.epsilon,
-    "match_mlperf": flags_obj.ml_perf,
-    "use_xla_for_gpu": flags_obj.use_xla_for_gpu,
+      "train_epochs": flags_obj.train_epochs,
+      "batches_per_step": num_devices,
+      "use_seed": flags_obj.seed is not None,
+      "hash_pipeline": flags_obj.hash_pipeline,
+      "batch_size": batch_size,
+      "eval_batch_size": eval_batch_size,
+      "learning_rate": flags_obj.learning_rate,
+      "mf_dim": flags_obj.num_factors,
+      "model_layers": [int(layer) for layer in flags_obj.layers],
+      "mf_regularization": flags_obj.mf_regularization,
+      "mlp_reg_layers": [float(reg) for reg in flags_obj.mlp_regularization],
+      "num_neg": flags_obj.num_neg,
+      "num_gpus": num_gpus,
+      "use_tpu": flags_obj.tpu is not None,
+      "tpu": flags_obj.tpu,
+      "tpu_zone": flags_obj.tpu_zone,
+      "tpu_gcp_project": flags_obj.tpu_gcp_project,
+      "beta1": flags_obj.beta1,
+      "beta2": flags_obj.beta2,
+      "epsilon": flags_obj.epsilon,
+      "match_mlperf": flags_obj.ml_perf,
+      "use_xla_for_gpu": flags_obj.use_xla_for_gpu,
   }
 
 
@@ -232,15 +235,14 @@ def run_ncf(_):
 
     train_input_fn = producer.make_input_fn(is_training=True)
     estimator.train(input_fn=train_input_fn, hooks=train_hooks,
-                          steps=num_train_steps)
+                    steps=num_train_steps)
 
     tf.logging.info("Beginning evaluation.")
     eval_input_fn = producer.make_input_fn(is_training=False)
 
     mlperf_helper.ncf_print(key=mlperf_helper.TAGS.EVAL_START,
                             value=cycle_index)
-    eval_results = estimator.evaluate(eval_input_fn,
-                                           steps=num_eval_steps)
+    eval_results = estimator.evaluate(eval_input_fn, steps=num_eval_steps)
     tf.logging.info("Evaluation complete.")
 
     hr = float(eval_results[rconst.HR_KEY])

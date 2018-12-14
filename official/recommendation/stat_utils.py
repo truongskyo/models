@@ -18,8 +18,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import atexit
 from collections import deque
 import multiprocessing
+import os
+import struct
 import sys
 import threading
 import time
@@ -33,75 +36,12 @@ def random_int32():
   return np.random.randint(low=0, high=np.iinfo(np.int32).max, dtype=np.int32)
 
 
-def _seeded_permutation(x, queue, count, count_lock, seed):
-  seed = seed or struct.unpack("<L", os.urandom(4))[0]
-  state = np.random.RandomState(seed=seed)
+def permutation(x):
+  seed = struct.unpack("<L", os.urandom(4))[0]
+  state = np.random.RandomState(seed=seed)  # pylint: disable=no-member
   output = np.arange(x, dtype=np.int32)
   state.shuffle(output)
-  queue.put(output)
-  with count_lock:
-    count.set(count.get() - 1)
-
-
-class AsyncPermuter(threading.Thread):
-  def __init__(self, perm_size, num_workers=2, num_to_produce=None):
-    super(AsyncPermuter, self).__init__()
-
-    self._num_workers = num_workers
-
-    self._num_to_produce = num_to_produce or np.inf
-    self._started_count = 0
-    self._max_queue_size = num_workers * 2
-
-    # The pool is deliberately created in the initializer. Because
-    # multiprocessing forks, it is not safe to call in side threads. So instead,
-    # we create the pool while we are still in the main thread.
-    self._pool = popen_helper.get_forkpool(num_workers, closing=False)
-
-    self._perm_size = perm_size
-    self._manager = multiprocessing.Manager()
-    self._result_queue = self._manager.Queue()
-    self._active_count = self._manager.Value("i", 0)
-    self._active_count_lock = self._manager.Lock()
-    self._stop_loop = False
-
-  def _loop_cond(self):
-    with self._active_count_lock:
-      return (self._started_count < self._num_to_produce or
-              self._active_count.get()) and not self._stop_loop
-
-  def run(self):
-    while self._loop_cond():
-      with self._active_count_lock:
-        current_count = self._active_count.get()
-        start_count = self._num_workers - current_count
-        if self._result_queue.qsize() + current_count >= self._max_queue_size:
-          start_count = 0
-
-        self._active_count.set(self._active_count.get() + start_count)
-
-      for _ in range(start_count):
-        if self._started_count < self._num_to_produce:
-          self._started_count += 1
-          self._pool.apply_async(
-              func=_seeded_permutation,
-              args=(self._perm_size, self._result_queue, self._active_count,
-                    self._active_count_lock, random_int32()))
-
-      time.sleep(0.01)
-
-    self._pool.close()
-    self._pool.terminate()
-    self.stop_loop()  # mark loop as closed.
-
-  def get(self):
-    if self._stop_loop and not self._result_queue.qsize():
-      raise ValueError("No entries in result queue and permuter is no longer "
-                       "producing entries.")
-    return self._result_queue.get()
-
-  def stop_loop(self):
-    self._stop_loop = True
+  return output
 
 
 def very_slightly_biased_randint(max_val_vector):

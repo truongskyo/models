@@ -56,8 +56,8 @@ DATASET_TO_NUM_USERS_AND_ITEMS = {
 
 
 _EXPECTED_CACHE_KEYS = (
-  rconst.TRAIN_USER_KEY, rconst.TRAIN_ITEM_KEY, rconst.EVAL_USER_KEY,
-  rconst.EVAL_ITEM_KEY, rconst.USER_MAP, rconst.ITEM_MAP)
+    rconst.TRAIN_USER_KEY, rconst.TRAIN_ITEM_KEY, rconst.EVAL_USER_KEY,
+    rconst.EVAL_ITEM_KEY, rconst.USER_MAP, rconst.ITEM_MAP)
 
 
 def _filter_index_sort(raw_rating_path, cache_path, match_mlperf):
@@ -172,13 +172,13 @@ def _filter_index_sort(raw_rating_path, cache_path, match_mlperf):
 
     data = {
         rconst.TRAIN_USER_KEY: train_df[movielens.USER_COLUMN]
-          .values.astype(rconst.USER_DTYPE),
+                               .values.astype(rconst.USER_DTYPE),
         rconst.TRAIN_ITEM_KEY: train_df[movielens.ITEM_COLUMN]
-          .values.astype(rconst.ITEM_DTYPE),
+                               .values.astype(rconst.ITEM_DTYPE),
         rconst.EVAL_USER_KEY: eval_df[movielens.USER_COLUMN]
-          .values.astype(rconst.USER_DTYPE),
+                              .values.astype(rconst.USER_DTYPE),
         rconst.EVAL_ITEM_KEY: eval_df[movielens.ITEM_COLUMN]
-          .values.astype(rconst.ITEM_DTYPE),
+                              .values.astype(rconst.ITEM_DTYPE),
         rconst.USER_MAP: user_map,
         rconst.ITEM_MAP: item_map,
         "create_time": time.time()

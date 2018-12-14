@@ -32,6 +32,7 @@ import timeit
 import traceback
 
 import numpy as np
+import six
 from six.moves import queue
 import tensorflow as tf
 from tensorflow.contrib.tpu.python.tpu.datasets import StreamingFilesDataset
@@ -102,8 +103,8 @@ class DatasetManager(object):
     """Convert NumPy arrays into a TFRecords entry."""
 
     feature_dict = {
-      k: tf.train.Feature(bytes_list=tf.train.BytesList(
-          value=[memoryview(v).tobytes()])) for k, v in data.items()}
+        k: tf.train.Feature(bytes_list=tf.train.BytesList(
+            value=[memoryview(v).tobytes()])) for k, v in data.items()}
 
     return tf.train.Example(
         features=tf.train.Features(feature=feature_dict)).SerializeToString()
@@ -269,9 +270,9 @@ class BaseDataConstructor(threading.Thread):
 
     # Training
     if self._train_pos_users.shape != self._train_pos_items.shape:
-      raise ValueError("User training positives ({}) is different from item "
-                       "training positives ({})".format(
-          self._train_pos_users.shape, self._train_pos_items.shape))
+      raise ValueError(
+          "User positives ({}) is different from item positives ({})".format(
+              self._train_pos_users.shape, self._train_pos_items.shape))
 
     self._train_pos_count = self._train_pos_users.shape[0]
     self._elements_in_epoch = (1 + num_train_negatives) * self._train_pos_count
@@ -290,9 +291,7 @@ class BaseDataConstructor(threading.Thread):
 
     # Intermediate artifacts
     self._current_epoch_order = np.empty(shape=(0,))
-    self._shuffle_producer = stat_utils.AsyncPermuter(
-        self._elements_in_epoch, num_workers=3,
-        num_to_produce=maximum_number_epochs)
+    self._shuffle_iterator = None
 
     if stream_files:
       self._shard_root = tempfile.mkdtemp(prefix="ncf_")
@@ -319,7 +318,7 @@ class BaseDataConstructor(threading.Thread):
         train_batch_ct=self.train_batches_per_epoch,
         eval_pos_ct=self._num_users, eval_batch_size=self.eval_batch_size,
         eval_batch_ct=self.eval_batches_per_epoch,
-        multiplier = "(x{} devices)".format(self._batches_per_train_step) if
+        multiplier="(x{} devices)".format(self._batches_per_train_step) if
         self._batches_per_train_step > 1 else "")
     return super(BaseDataConstructor, self).__repr__() + "\n" + summary
 
@@ -334,14 +333,9 @@ class BaseDataConstructor(threading.Thread):
 
   def _get_order_chunk(self):
     with self._current_epoch_order_lock:
-      batch_indices = self._current_epoch_order[:self.train_batch_size]
-      self._current_epoch_order = self._current_epoch_order[self.train_batch_size:]
-
-      num_extra = self.train_batch_size - batch_indices.shape[0]
-      if num_extra:
-        batch_indices = np.concatenate([batch_indices,
-                                        self._current_epoch_order[:num_extra]])
-        self._current_epoch_order = self._current_epoch_order[num_extra:]
+      batch_indices, self._current_epoch_order = (
+          self._current_epoch_order[:self.train_batch_size],
+          self._current_epoch_order[self.train_batch_size:])
 
       return batch_indices
 
@@ -352,7 +346,7 @@ class BaseDataConstructor(threading.Thread):
     raise NotImplementedError
 
   def _run(self):
-    self._shuffle_producer.start()
+    self._start_shuffle_iterator()
     self.construct_lookup_variables()
     self._construct_training_epoch()
     self._construct_eval_epoch()
@@ -369,8 +363,15 @@ class BaseDataConstructor(threading.Thread):
       sys.stderr.flush()
       raise
 
+  def _start_shuffle_iterator(self):
+    pool = popen_helper.get_forkpool(3, closing=False)
+    atexit.register(pool.close)
+    args = [self._elements_in_epoch for _ in range(self._maximum_number_epochs)]
+    self._shuffle_iterator = pool.imap_unordered(stat_utils.permutation, args)
+
   def _get_training_batch(self, i):
     batch_indices = self._get_order_chunk()
+    mask_start_index = batch_indices.shape[0]
 
     batch_ind_mod = np.mod(batch_indices, self._train_pos_count)
     users = self._train_pos_users[batch_ind_mod]
@@ -386,7 +387,7 @@ class BaseDataConstructor(threading.Thread):
     labels = np.logical_not(negative_indices).astype(np.bool)
 
     # Pad last partial batch
-    pad_length = self.train_batch_size - batch_indices.shape[0]
+    pad_length = self.train_batch_size - mask_start_index
     if pad_length:
       # We pad with arange rather than zeros because the network will still
       # compute logits for padded examples, and padding with zeros would create
@@ -399,10 +400,10 @@ class BaseDataConstructor(threading.Thread):
       labels = np.concatenate([labels, label_pad])
 
     self._train_dataset.put(i, {
-      movielens.USER_COLUMN: users,
-      movielens.ITEM_COLUMN: items,
-      rconst.MASK_START_INDEX: np.array(batch_indices.shape[0], dtype=np.int32),
-      "labels": labels,
+        movielens.USER_COLUMN: users,
+        movielens.ITEM_COLUMN: items,
+        rconst.MASK_START_INDEX: np.array(mask_start_index, dtype=np.int32),
+        "labels": labels,
     })
 
   def _wait_to_construct_train_epoch(self):
@@ -423,14 +424,14 @@ class BaseDataConstructor(threading.Thread):
     self._train_dataset.start_construction()
     map_args = list(range(self.train_batches_per_epoch))
     assert not self._current_epoch_order.shape[0]
-    self._current_epoch_order = self._shuffle_producer.get()
+    self._current_epoch_order = six.next(self._shuffle_iterator)
 
     with popen_helper.get_threadpool(6) as pool:
       pool.map(self._get_training_batch, map_args)
     self._train_dataset.end_construction()
 
     tf.logging.info("Epoch construction complete. Time: {:.1f} seconds".format(
-      timeit.default_timer() - start_time))
+        timeit.default_timer() - start_time))
 
   def _get_eval_batch(self, i):
     low_index = i * self._eval_users_per_batch
@@ -446,8 +447,8 @@ class BaseDataConstructor(threading.Thread):
     #   position, and then switched with the last element after the duplicate
     #   mask has been computed.
     items = np.concatenate([
-      self._eval_pos_items[low_index:high_index, np.newaxis],
-      self.lookup_negative_items(negative_users=users[:, :-1].flatten())
+        self._eval_pos_items[low_index:high_index, np.newaxis],
+        self.lookup_negative_items(negative_users=users[:, :-1].flatten())
         .reshape(-1, rconst.NUM_EVAL_NEGATIVES),
     ], axis=1)
 
@@ -490,8 +491,8 @@ class BaseDataConstructor(threading.Thread):
 
   def make_input_fn(self, is_training):
     return (
-      self._train_dataset.make_input_fn(self.train_batch_size) if is_training
-      else self._eval_dataset.make_input_fn(self.eval_batch_size))
+        self._train_dataset.make_input_fn(self.train_batch_size) if is_training
+        else self._eval_dataset.make_input_fn(self.eval_batch_size))
 
 
 class DummyConstructor(threading.Thread):
@@ -522,17 +523,17 @@ class DummyConstructor(threading.Thread):
         labels = tf.cast(tf.random_uniform(
             [batch_size], dtype=tf.int32, minval=0, maxval=2), tf.bool)
         data = {
-                 movielens.USER_COLUMN: users,
-                 movielens.ITEM_COLUMN: items,
-                 rconst.VALID_POINT_MASK: valid_point_mask,
-               }, labels
+            movielens.USER_COLUMN: users,
+            movielens.ITEM_COLUMN: items,
+            rconst.VALID_POINT_MASK: valid_point_mask,
+        }, labels
       else:
         dupe_mask = tf.cast(tf.random_uniform([batch_size], dtype=tf.int32,
                                               minval=0, maxval=2), tf.bool)
         data = {
-          movielens.USER_COLUMN: users,
-          movielens.ITEM_COLUMN: items,
-          rconst.DUPLICATE_MASK: dupe_mask,
+            movielens.USER_COLUMN: users,
+            movielens.ITEM_COLUMN: items,
+            rconst.DUPLICATE_MASK: dupe_mask,
         }
 
       dataset = tf.data.Dataset.from_tensors(data).repeat(
@@ -567,7 +568,7 @@ class MaterializedDataConstructor(BaseDataConstructor):
     full_set = np.arange(self._num_items, dtype=rconst.ITEM_DTYPE)
 
     self._per_user_neg_count = np.zeros(
-      shape=(self._num_users,), dtype=np.int32)
+        shape=(self._num_users,), dtype=np.int32)
 
     # Threading does not improve this loop. For some reason, the np.delete
     # call does not parallelize well. Multiprocessing incurs too much
@@ -579,9 +580,9 @@ class MaterializedDataConstructor(BaseDataConstructor):
       self._negative_table[i, :self._per_user_neg_count[i]] = negatives
 
     tf.logging.info("Negative sample table built. Time: {:.1f} seconds".format(
-      timeit.default_timer() - start_time))
+        timeit.default_timer() - start_time))
 
   def lookup_negative_items(self, negative_users, **kwargs):
     negative_item_choice = stat_utils.very_slightly_biased_randint(
-      self._per_user_neg_count[negative_users])
+        self._per_user_neg_count[negative_users])
     return self._negative_table[negative_users, negative_item_choice]

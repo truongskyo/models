@@ -212,11 +212,12 @@ def construct_model_tf(users, items, params):
 
     num_layer = len(model_layers)  # Number of layers in the MLP
     for layer in xrange(1, num_layer):
+      regularizer = tf.contrib.layers.l2_regularizer(mlp_reg_layers[layer])
       mlp_vector = tf.layers.dense(
           mlp_vector,
           model_layers[layer],
           kernel_initializer=tf.glorot_uniform_initializer(),
-          kernel_regularizer=tf.contrib.layers.l2_regularizer(mlp_reg_layers[layer]),
+          kernel_regularizer=regularizer,
           activation=tf.nn.relu)
 
     # Concatenate GMF and MLP parts
@@ -397,9 +398,9 @@ def compute_eval_loss_and_metrics(logits,              # type: tf.Tensor
 
   # Examples are provided by the eval Dataset in a structured format, so eval
   # labels can be reconstructed on the fly.
-  eval_labels = tf.reshape(tf.one_hot(
-      tf.zeros(shape=(logits_by_user.shape[0],), dtype=tf.int32) + rconst.NUM_EVAL_NEGATIVES,
-      logits_by_user.shape[1], dtype=tf.int32), (-1,))
+  eval_labels = tf.reshape(shape=(-1,), tensor=tf.one_hot(
+      tf.zeros(shape=(logits_by_user.shape[0],), dtype=tf.int32) +
+      rconst.NUM_EVAL_NEGATIVES, logits_by_user.shape[1], dtype=tf.int32))
 
   eval_labels_float = tf.cast(eval_labels, tf.float32)
 
@@ -483,7 +484,8 @@ def compute_top_k_and_ndcg(logits,              # type: tf.Tensor
   # perform matrix multiplications very quickly. This is similar to np.argwhere.
   # However this is a special case because the target will only appear in
   # sort_indices once.
-  one_hot_position = tf.cast(tf.equal(sort_indices, rconst.NUM_EVAL_NEGATIVES), tf.int32)
+  one_hot_position = tf.cast(tf.equal(sort_indices, rconst.NUM_EVAL_NEGATIVES),
+                             tf.int32)
   sparse_positions = tf.multiply(
       one_hot_position, tf.range(logits_by_user.shape[1])[tf.newaxis, :])
   position_vector = tf.reduce_sum(sparse_positions, axis=1)
