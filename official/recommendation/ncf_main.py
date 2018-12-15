@@ -114,6 +114,7 @@ def construct_estimator(model_dir, params):
 
 
 def log_and_get_hooks(eval_batch_size):
+  """Convenience method for hook and logger creation."""
   # Create hooks that log information about the training and metric values
   train_hooks = hooks_helper.get_train_hooks(
       FLAGS.hooks,
@@ -139,6 +140,7 @@ def log_and_get_hooks(eval_batch_size):
 
 
 def parse_flags(flags_obj):
+  """Convenience method to turn flags into params."""
   num_gpus = flags_core.get_num_gpus(flags_obj)
   num_devices = FLAGS.num_tpu_shards if FLAGS.tpu else num_gpus or 1
 

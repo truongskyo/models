@@ -186,10 +186,10 @@ def construct_model(users, items, params):
       input_length=1, name="embedding_user")(user_input)
 
   embedding_item = tf.keras.layers.Embedding(
-    num_items, mf_dim + model_layers[0] // 2,
-    embeddings_initializer=embedding_initializer,
-    embeddings_regularizer=tf.keras.regularizers.l2(mf_regularization),
-    input_length=1, name="embedding_item")(item_input)
+      num_items, mf_dim + model_layers[0] // 2,
+      embeddings_initializer=embedding_initializer,
+      embeddings_regularizer=tf.keras.regularizers.l2(mf_regularization),
+      input_length=1, name="embedding_item")(item_input)
 
   # GMF part
   mf_user_latent = tf.keras.layers.Lambda(

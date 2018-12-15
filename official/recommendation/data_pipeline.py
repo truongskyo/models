@@ -74,6 +74,12 @@ _EVAL_FEATURE_MAP = {
 
 
 class DatasetManager(object):
+  """Helper class for handling TensorFlow specific data tasks.
+
+  This class takes the (relatively) framework agnostic work done by the data
+  constructor classes and handles the TensorFlow specific portions (TFRecord
+  management, tf.Dataset creation, etc.).
+  """
   def __init__(self, is_training, stream_files, batches_per_epoch,
                shard_root=None):
     self._is_training = is_training
@@ -112,6 +118,13 @@ class DatasetManager(object):
         features=tf.train.Features(feature=feature_dict)).SerializeToString()
 
   def _deserialize(self, serialized_data, batch_size):
+    """Convert serialized TFRecords into tensors.
+
+    Args:
+      serialized_data: A tensor containing serialized records.
+      batch_size: The data arrives pre-batched, so batch size is needed to
+        deserialize the data.
+    """
     feature_map = _TRAIN_FEATURE_MAP if self._is_training else _EVAL_FEATURE_MAP
     features = tf.parse_single_example(serialized_data, feature_map)
 
@@ -146,6 +159,19 @@ class DatasetManager(object):
 
   def put(self, index, data):
     # type: (int, dict) -> None
+    """Store data for later consumption.
+
+    Because there are several paths for storing and yielding data (queues,
+    lists, files) the data producer simply provides the data in a standard
+    format at which point the dataset manager handles storing it in the correct
+    form.
+
+    Args:
+      index: Used to select shards when writing to files.
+      data: A dict of the data to be stored. This method mutates data, and
+        therefore expects to be the only consumer.
+    """
+
     if self._stream_files:
       example_bytes = self._serialize(data)
       with self._write_locks[index % rconst.NUM_FILE_SHARDS]:
@@ -179,6 +205,7 @@ class DatasetManager(object):
     self._epochs_completed += 1
 
   def data_generator(self):
+    """Yields examples during local training."""
     assert not self._stream_files
 
     if self._is_training:
@@ -193,6 +220,15 @@ class DatasetManager(object):
         yield i
 
   def get_dataset(self, batch_size):
+    """Construct the dataset to be used for training and eval.
+
+    For local training, data is provided through Dataset.from_generator. For
+    remote training (TPUs) the data is first serialized to files and then sent
+    to the TPU through a StreamingFilesDataset.
+
+    Args:
+      batch_size: The per-device batch size of the dataset.
+    """
     self._epochs_requested += 1
     if self._stream_files:
       epoch_data_dir = self._result_queue.get(timeout=300)
@@ -205,28 +241,34 @@ class DatasetManager(object):
           files=file_pattern, worker_job="worker",
           num_parallel_reads=rconst.NUM_FILE_SHARDS, num_epochs=1)
       map_fn = functools.partial(self._deserialize, batch_size=batch_size)
-      return dataset.map(map_fn, num_parallel_calls=16)
-
-    types = {movielens.USER_COLUMN: rconst.USER_DTYPE,
-             movielens.ITEM_COLUMN: rconst.ITEM_DTYPE}
-    shapes = {movielens.USER_COLUMN: tf.TensorShape([batch_size]),
-              movielens.ITEM_COLUMN: tf.TensorShape([batch_size])}
-
-    if self._is_training:
-      types[rconst.VALID_POINT_MASK] = np.bool
-      shapes[rconst.VALID_POINT_MASK] = tf.TensorShape([batch_size])
-
-      types = (types, np.bool)
-      shapes = (shapes, tf.TensorShape([batch_size]))
+      dataset = dataset.map(map_fn, num_parallel_calls=16)
 
     else:
-      types[rconst.DUPLICATE_MASK] = np.bool
-      shapes[rconst.DUPLICATE_MASK] = tf.TensorShape([batch_size])
+      types = {movielens.USER_COLUMN: rconst.USER_DTYPE,
+               movielens.ITEM_COLUMN: rconst.ITEM_DTYPE}
+      shapes = {movielens.USER_COLUMN: tf.TensorShape([batch_size]),
+                movielens.ITEM_COLUMN: tf.TensorShape([batch_size])}
 
-    return tf.data.Dataset.from_generator(
-        generator=self.data_generator, output_types=types, output_shapes=shapes)
+      if self._is_training:
+        types[rconst.VALID_POINT_MASK] = np.bool
+        shapes[rconst.VALID_POINT_MASK] = tf.TensorShape([batch_size])
+
+        types = (types, np.bool)
+        shapes = (shapes, tf.TensorShape([batch_size]))
+
+      else:
+        types[rconst.DUPLICATE_MASK] = np.bool
+        shapes[rconst.DUPLICATE_MASK] = tf.TensorShape([batch_size])
+
+      dataset = tf.data.Dataset.from_generator(
+          generator=self.data_generator, output_types=types,
+          output_shapes=shapes)
+
+    return dataset.prefetch(16)
 
   def make_input_fn(self, batch_size):
+    """Create an input_fn which checks for batch size consistency."""
+
     def input_fn(params):
       param_batch_size = (params["batch_size"] if self._is_training else
                           params["eval_batch_size"])
@@ -234,15 +276,22 @@ class DatasetManager(object):
         raise ValueError("producer batch size ({}) differs from params batch "
                          "size ({})".format(batch_size, param_batch_size))
 
-      dataset = self.get_dataset(batch_size=batch_size)
-      dataset = dataset.prefetch(16)
-
-      return dataset
+      return self.get_dataset(batch_size=batch_size)
 
     return input_fn
 
 
 class BaseDataConstructor(threading.Thread):
+  """Data constructor base class.
+
+  This class manages the control flow for constructing data. It is not meant
+  to be used directly, but instead subclasses should implement the following
+  two methods:
+
+    self.construct_lookup_variables
+    self.lookup_negative_items
+
+  """
   def __init__(self,
                maximum_number_epochs,   # type: int
                num_users,               # type: int
@@ -342,9 +391,11 @@ class BaseDataConstructor(threading.Thread):
       return batch_indices
 
   def construct_lookup_variables(self):
+    """Perform any one time pre-compute work."""
     raise NotImplementedError
 
   def lookup_negative_items(self, **kwargs):
+    """Randomly sample negative items for given users."""
     raise NotImplementedError
 
   def _run(self):
@@ -373,6 +424,12 @@ class BaseDataConstructor(threading.Thread):
     self._shuffle_iterator = pool.imap_unordered(stat_utils.permutation, args)
 
   def _get_training_batch(self, i):
+    """Construct a single batch of training data.
+
+    Args:
+      i: The index of the batch. This is used when stream_files=True to assign
+        data to file shards.
+    """
     batch_indices = self._get_order_chunk()
     mask_start_index = batch_indices.shape[0]
 
@@ -419,6 +476,7 @@ class BaseDataConstructor(threading.Thread):
             "Waited {} times for training data to be consumed".format(count))
 
   def _construct_training_epoch(self):
+    """Loop to construct a batch of training data."""
     self._wait_to_construct_train_epoch()
     start_time = timeit.default_timer()
     if self._stop_loop:
@@ -437,6 +495,11 @@ class BaseDataConstructor(threading.Thread):
         timeit.default_timer() - start_time))
 
   def _get_eval_batch(self, i):
+    """Construct a single batch of evaluation data.
+
+    Args:
+      i: The index of the batch.
+    """
     low_index = i * self._eval_users_per_batch
     high_index = (i + 1) * self._eval_users_per_batch
 
@@ -478,6 +541,7 @@ class BaseDataConstructor(threading.Thread):
     })
 
   def _construct_eval_epoch(self):
+    """Loop to construct data for evaluation."""
     if self._stop_loop:
       return
 
@@ -499,13 +563,15 @@ class BaseDataConstructor(threading.Thread):
 
 
 class DummyConstructor(threading.Thread):
+  """Class for running with synthetic data."""
   def run(self):
     pass
 
   def stop_loop(self):
     pass
 
-  def make_input_fn(self, is_training):
+  @staticmethod
+  def make_input_fn(is_training):
     """Construct training input_fn that uses synthetic data."""
 
     def input_fn(params):
@@ -548,6 +614,36 @@ class DummyConstructor(threading.Thread):
 
 
 class MaterializedDataConstructor(BaseDataConstructor):
+  """Materialize a table of negative examples for fast negative generation.
+
+  This class creates a table (num_users x num_items) containing all of the
+  negative examples for each user. This table is conceptually ragged; that is to
+  say the items dimension will have elements at the end which are not used equal
+  to the number of positive elements for a given user. For instance:
+
+  num_users = 3
+  num_items = 5
+  positives = [[1, 3], [0], [1, 2, 3, 4]]
+
+  will generate a negative table:
+  [
+    [0         2         4         int32max  int32max],
+    [1         2         3         4         int32max],
+    [0         int32max  int32max  int32max  int32max],
+  ]
+
+  and a vector of per-user negative counts, which in this case would be:
+    [3, 4, 1]
+
+  When sampling negatives, integers are (nearly) uniformly selected from the
+  range [0, per_user_neg_count[user]) which gives a column_index, at which
+  point the negative can be selected as:
+    negative_table[user, column_index]
+
+  This technique will not scale; however MovieLens is small enough that even
+  a pre-compute which is quadratic in problem size will still fit in memory. A
+  more scalable lookup method is in the works.
+  """
   def __init__(self, *args, **kwargs):
     super(MaterializedDataConstructor, self).__init__(*args, **kwargs)
     self._negative_table = None
