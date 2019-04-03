@@ -84,6 +84,28 @@ the tensorflow/models/research/ directory:
 # From tensorflow/models/research/
 protoc object_detection/protos/*.proto --python_out=.
 ```
+## Fixed issue by compling proto
+**If Compile the Protobuf library, the following error occurs:**
+
+``` bash
+# From tensorflow/models/research/
+object_detection/protos/calibration.proto:34:3: Expected "required", "optional", or "repeated".
+object_detection/protos/calibration.proto:34:6: Expected field name.
+object_detection/protos/calibration.proto:48:3: Expected "required", "optional", or "repeated".
+object_detection/protos/calibration.proto:48:6: Expected field name.
+```
+**Solution:**
+
+``` bash
+# From tensorflow/models/research/
+mkdir protoc_3.3
+    cd protoc_3.3
+    wget wget https://github.com/google/protobuf/releases/download/v3.3.0/protoc-3.3.0-linux-x86_64.zip
+    chmod 775 protoc-3.3.0-linux-x86_64.zip
+    unzip protoc-3.3.0-linux-x86_64.zip
+    cd ../models/
+    ./protoc_3.3/bin/protoc object_detection/protos/*.proto --python_out=.
+```
 
 **Note**: If you're getting errors while compiling, you might be using an incompatible protobuf compiler. If that's the case, use the following manual installation
 
